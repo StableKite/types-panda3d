@@ -1,0 +1,70 @@
+name: StableKite latest strict Pyright
+
+on:
+  push:
+    branches:
+      - stablekite/typing-pyright-ci
+  workflow_dispatch:
+
+jobs:
+  strict-pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build and install real runtime plus stubs
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m venv .venv
+          .venv/bin/python -m pip install --no-deps panda3d==1.10.16 dist/*.whl
+          .venv/bin/python - <<'PY'
+          import importlib.metadata as md
+          files = [str(p) for p in (md.files("types-panda3d") or ())]
+          print("TYPE_PANDA3D_FILES", len(files))
+          assert any(p.endswith("panda3d-stubs/core/__init__.pyi") for p in files)
+          assert any(p.endswith("direct-stubs/gui/DirectButton.pyi") for p in files)
+          import panda3d
+          print("PANDA3D[RUNTIME ", panda3d.__file__)
+          PY
+      - name: Latest strict Pyright consumer
+        run: |
+          work="$RUNNER_TEMP/stable-kit-types-panda3d-consumer"
+          rm -rf "$work"
+          mkdir -p "$work"
+          cat > "$work/strict_consumer.py" <<'PY'
+          from direct.gui.DirectButton import DirectButton
+          from direct.task.Task import TaskManager
+          from panda3d.core import NodePath, TransparencyAttrib
+
+          async def task_coroutine() -> None:
+              return None
+
+          def enum_member_case(node: NodePath) -> None:
+              node.set_transparency(TransparencyAttrib.M_alpha)
+              node.set_transparency(1)
+
+          def direct_gui_snake_case(button: DirectButton, parent: NodePath) -> None:
+              button.set_pos(0.1, 0.1, 0.1)
+              button.reparent_to(parent)
+
+          def implicit_conversion_cases(node: NodePath, task_manager: TaskManager) -> None:
+              node.set_pos((1.0, 2.0, 3.0))
+              node.set_color((1.0, 0.5, 0.25, 1.0))
+              task_manager.add(task_coroutine(), "stableKite-coroutine")
+          PY
+          cat > "$work/pyrightconfig.json" <<'JSON'
+          {
+            "typeCheckingMode": "strict",
+            "pythonVersion": "3.14",
+            "include": ["strict_consumer.py"]
+          }
+          JSON
+          cd "$work"
+          npx --yes pyright@latest --version
+          npx --yes pyright@latest --pythonpath "$GITHUB_WORKSPACE/.venv/bin/python"
